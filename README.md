@@ -1,8 +1,8 @@
-# DILCR
+# DILCORE
 ## Deeply integrating latent consistent representations in high-noise multi-omics data for cancer subtyping 
 ## Environment
-DILCR uses the Paddle deep learning framework.
-If you want to run DILCR, please ensure that the Paddle framework is already installed on this machine. All the specific packages required can be found in [requirements.txt](requirements.txt)
+DILCORE uses the Paddle deep learning framework.
+If you want to run DILCORE, please ensure that the Paddle framework is already installed on this machine. All the specific packages required can be found in [requirements.txt](requirements.txt)
 
 ## Pytorch
 We have updated the pytorch code, which may cause some performance loss.
