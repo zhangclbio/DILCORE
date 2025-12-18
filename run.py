@@ -1,5 +1,4 @@
 import random
-
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -14,11 +13,11 @@ from datetime import datetime
 import utils2
 import utils
 import load_data
-from modelInfoNCE5 import DILCR, loss_funcation
+from model import DILCR, loss_funcation
 
 warnings.filterwarnings("ignore")
 DATASET_PATH = "/home/"
-# seed = np.random.randint(0, 10000)  # 生成不同的随机种子
+# seed = np.random.randint(0, 10000)  # Generate different random seeds
 seed = 123456
 device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
@@ -32,31 +31,9 @@ def setup_seed(seed):
 
 if __name__ == '__main__':
     cancer_type = "kirc"
+    # Merge duplicate conf definitions
     conf = dict()
     conf['dataset'] = cancer_type
-    exp, methy, mirna, survival = load_data.load_TCGA(DATASET_PATH+"data/", cancer_type,'mean') # Preprocessing method  
-    # 输出样本数量和基因数量
-    sample_num = exp.shape[1]
-    gene_num = exp.shape[0]
-    print(f"样本数量1: {sample_num}")
-    print(f"基因数量: {gene_num}")
-    methy_sample_num = methy.shape[1]
-    methy_num = methy.shape[0]
-    print(f"样本数量2: {methy_sample_num}")
-    print(f"甲基数量: {methy_num}")
-    mirna_sample_num = exp.shape[1]
-    mirna_num = exp.shape[0]
-    print(f"样本数量3: {mirna_sample_num}")
-    print(f"mirna数量: {mirna_num}")     
-    exp_df = torch.tensor(exp.values.T, dtype=torch.float32).to(device)
-    methy_df = torch.tensor(methy.values.T, dtype=torch.float32).to(device)
-    mirna_df = torch.tensor(mirna.values.T, dtype=torch.float32).to(device)
-    full_data = [utils2.p_normalize(exp_df), utils2.p_normalize(methy_df), utils2.p_normalize(mirna_df)]
-    
-    # params
-    conf = dict()
-    conf['dataset'] = cancer_type
-    # conf['β']=2
     conf['view_num'] = 3
     conf['batch_size'] = 128
     conf['encoder_dim'] = [1024]
@@ -78,214 +55,325 @@ if __name__ == '__main__':
     conf['lr'] = 1e-4
     conf['pre_epochs'] = 1500
     conf['idec_epochs'] = 500
-    # If the DILCR effect is not good, we recommend adjusting the preprocessing epoch.
+    
+    # Load multi-omics data (Preprocessing method: mean imputation)
+    exp, methy, mirna, survival = load_data.load_TCGA(DATASET_PATH+"data/", cancer_type, 'mean')
+    
+    # Output sample and feature counts
+    sample_num = exp.shape[1]
+    gene_num = exp.shape[0]
+    print(f"Sample count (mRNA): {sample_num}")
+    print(f"Gene count (mRNA): {gene_num}")
+    
+    methy_sample_num = methy.shape[1]
+    methy_num = methy.shape[0]
+    print(f"Sample count (methylation): {methy_sample_num}")
+    print(f"Methylation site count: {methy_num}")
+    
+    # Fix: Correct miRNA dimension reference
+    mirna_sample_num = mirna.shape[1]
+    mirna_num = mirna.shape[0]
+    print(f"Sample count (miRNA): {mirna_sample_num}")
+    print(f"miRNA count: {mirna_num}")     
+    
+    # Convert to tensor and move to device
+    exp_df = torch.tensor(exp.values.T, dtype=torch.float32).to(device)
+    methy_df = torch.tensor(methy.values.T, dtype=torch.float32).to(device)
+    mirna_df = torch.tensor(mirna.values.T, dtype=torch.float32).to(device)
+    full_data = [utils2.p_normalize(exp_df), utils2.p_normalize(methy_df), utils2.p_normalize(mirna_df)]
+    
+    # Set cluster number based on cancer type
     if conf['dataset'] == "aml":
         conf['cluster_num'] = 3
-    if conf['dataset'] == "brca":
+    elif conf['dataset'] == "brca":
         conf['cluster_num'] = 5
-    if conf['dataset'] == "skcm":
+    elif conf['dataset'] == "skcm":
         conf['cluster_num'] = 5
-    if conf['dataset'] == "lihc":
+    elif conf['dataset'] == "lihc":
         conf['cluster_num'] = 5
-    if conf['dataset'] == "coad":
+    elif conf['dataset'] == "coad":
         conf['cluster_num'] = 4
-    if conf['dataset'] == "kirc":
+    elif conf['dataset'] == "kirc":
         conf['cluster_num'] = 4
-    if conf['dataset'] == "gbm":
+    elif conf['dataset'] == "gbm":
         conf['cluster_num'] = 3
-    if conf['dataset'] == "ov":
+    elif conf['dataset'] == "ov":
         conf['cluster_num'] = 3
-    if conf['dataset'] == "lusc":
+    elif conf['dataset'] == "lusc":
         conf['cluster_num'] = 3
-    if conf['dataset'] == "sarc":
+    elif conf['dataset'] == "sarc":
         conf['cluster_num'] = 5
-    # seed = np.random.randint(0, 10000)  # 生成不同的随机种子
+    
+    # Fix random seed setup (only once)
     setup_seed(seed=seed)
     
     # ========================Result File====================
-    folder = "/home//result/{}_result".format(conf['dataset'])
+    folder = "/home/result/{}_result".format(conf['dataset'])
     if not os.path.exists(folder):
         os.makedirs(folder)
-    # current_time = datetime.now().strftime("%m%d_%H%M")
-    # result = open("{}/{}_{}_{}.csv".format(folder, conf['dataset'], conf['cluster_num'], current_time), 'w+')
+    
+    # Create result CSV file
     result = open("{}/{}_{}.csv".format(folder, conf['dataset'], conf['cluster_num']), 'w+')
     writer = csv.writer(result)
-    writer.writerow(['p', 'logp', 'log10p', 'epoch', 'step'])
-    # =======================Initialize the model and loss function====================
+    writer.writerow(['p_value', 'log2p', 'log10p', 'epoch', 'training_phase'])
+    
+    # =======================Initialize Model and Loss Function====================
     in_dim = [exp_df.shape[1], methy_df.shape[1], mirna_df.shape[1]]
-    model = DILCR(in_dim=in_dim, encoder_dim=conf['encoder_dim'], feature_dim=conf['feature_dim'],
-                  common_dim=conf['common_dim'],
-                  mu_logvar_dim=conf['mu_logvar_dim'], cluster_var_dim=conf['cluster_var_dim'],
-                  up_and_down_dim=conf['up_and_down_dim'], cluster_num=conf['cluster_num'],
-                  peculiar_dim=conf['peculiar_dim'], view_num=conf['view_num'], device = device)
+    model = DILCR(
+        in_dim=in_dim, 
+        encoder_dim=conf['encoder_dim'], 
+        feature_dim=conf['feature_dim'],
+        common_dim=conf['common_dim'],
+        mu_logvar_dim=conf['mu_logvar_dim'], 
+        cluster_var_dim=conf['cluster_var_dim'],
+        up_and_down_dim=conf['up_and_down_dim'], 
+        cluster_num=conf['cluster_num'],
+        peculiar_dim=conf['peculiar_dim'], 
+        view_num=conf['view_num'], 
+        device=device
+    )
     model = model.to(device=device)
     opt = torch.optim.AdamW(lr=conf['lr'], params=model.parameters())
     loss = loss_funcation()
-    # =======================pre-training VAE====================
-    print("pre-----------------------train-dataset-: {} cluster_num-: {}".format(conf['dataset'], conf['cluster_num']))
+    
+    # =======================Pre-training VAE====================
+    print("Pre-training VAE ----------------------- Dataset: {} | Cluster number: {}".format(conf['dataset'], conf['cluster_num']))
     pbar = tqdm(range(conf['pre_epochs']), ncols=120)
-    max_log = 0.0
-    max_label = []
+    max_log10p = 0.0
+    max_label_pretrain = []
+    
     for epoch in pbar:
-        # 抽取数据 训练batch
+        # Batch training
         sample_num = exp_df.shape[0]
         randidx = torch.randperm(sample_num)
+        
         for i in range(round(sample_num / conf['batch_size'])):
             idx = randidx[conf['batch_size'] * i:(conf['batch_size'] * (i + 1))]
-            data_batch = [utils2.p_normalize(exp_df[idx]), utils2.p_normalize(methy_df[idx]), utils2.p_normalize(mirna_df[idx])]
-            # 前向传播
+            data_batch = [
+                utils2.p_normalize(exp_df[idx]), 
+                utils2.p_normalize(methy_df[idx]), 
+                utils2.p_normalize(mirna_df[idx])
+            ]
+            
+            # Forward pass
             out_list, latent_dist = model(data_batch)
-
-            # l, loss_dict = loss(view_num=conf['view_num'], data_batch=data_batch, out_list=out_list,
-            #                     latent_dist=latent_dist,
-            #                     lmda_list=lmda_list, batch_size=conf['batch_size'])
-            l, loss_dict = loss(view_num=conf['view_num'], data_batch=data_batch, out_list=out_list,
-                    latent_dist=latent_dist, lmda_list=lmda_list, batch_size=conf['batch_size'], model=model)
-            # 反向传播
-            l.backward()
-            # 添加梯度监控（每个batch执行）
-            # if (epoch % 500 == 0) and (i == 0):  # 每50个epoch监控第一个batch
-            #     print(f"\nEpoch {epoch} Gradients:")
-            #     for name, param in model.named_parameters():
-            #         if param.grad is not None:
-            #             print(f"{name}: {param.grad.abs().mean().item():.2e}")
+            
+            # Calculate loss
+            total_loss, loss_dict = loss(
+                view_num=conf['view_num'], 
+                data_batch=data_batch, 
+                out_list=out_list,
+                latent_dist=latent_dist, 
+                lmda_list=lmda_list, 
+                batch_size=conf['batch_size'], 
+                model=model
+            )
+            
+            # Backward pass and optimization
+            total_loss.backward()
             opt.step()
             opt.zero_grad()
-        # Evaluation model
-        # 每500轮评估聚类效果
+        
+        # Evaluate clustering performance every eval_epoch
         if (epoch + 1) % eval_epoch == 0:
             with torch.no_grad():
                 model.eval()
                 out_list, latent_dist = model(full_data)
-                kmeans = KMeans(n_clusters=conf['cluster_num'], n_init=20, random_state=seed, init="k-means++")
+                
+                # K-means clustering on latent features
+                kmeans = KMeans(
+                    n_clusters=conf['cluster_num'], 
+                    n_init=20, 
+                    random_state=seed, 
+                    init="k-means++"
+                )
                 kmeans.fit(latent_dist['cluster_var'].cpu().numpy())
-                pred = kmeans.labels_
-                cluster_center = kmeans.cluster_centers_
-                survival["label"] = np.array(pred)
-                df = survival
-                res = utils2.log_rank(df)
-                writer.writerow([res['p'], res['log2p'], res['log10p'], epoch, "pre"])
+                pred_labels = kmeans.labels_
+                cluster_centers = kmeans.cluster_centers_
+                
+                # Survival analysis (log-rank test)
+                survival["label"] = np.array(pred_labels)
+                logrank_res = utils2.log_rank(survival)
+                
+                # Write evaluation results
+                writer.writerow([
+                    logrank_res['p'], 
+                    logrank_res['log2p'], 
+                    logrank_res['log10p'], 
+                    epoch, 
+                    "pre_training"
+                ])
                 result.flush()
                 model.train()
-            # 保存最佳模型
-            if (res['log10p'] > max_log):
-                max_log = res['log10p']
-                max_label = pred
-                torch.save(model.state_dict(), "{}/{}_max_log.pdparams".format(folder, conf['dataset']))
-
-        pbar.set_postfix(loss="{:3.4f}".format(loss_dict['loss'].item()),
-                         rec_loss="{:3.4f}".format(loss_dict['rec_loss'].item()),
-                         KLD="{:3.4f}".format(loss_dict['KLD'].item()),
-                         I_loss="{:3.4f}".format(loss_dict['I_loss'].item()))
-    # =======================training IDEC=====================
-    # ========================Initialize cluster centers via K-means==============
-    #聚类优化阶段（IDEC）
+            
+            # Save best model (based on log10p value)
+            if logrank_res['log10p'] > max_log10p:
+                max_log10p = logrank_res['log10p']
+                max_label_pretrain = pred_labels
+                torch.save(
+                    model.state_dict(), 
+                    "{}/{}_pretrain_best_log10p.pdparams".format(folder, conf['dataset'])
+                )
+        
+        # Update progress bar with loss metrics
+        pbar.set_postfix(
+            total_loss="{:3.4f}".format(loss_dict['loss'].item()),
+            reconstruction_loss="{:3.4f}".format(loss_dict['rec_loss'].item()),
+            KLD_loss="{:3.4f}".format(loss_dict['KLD'].item()),
+            InfoNCE_loss="{:3.4f}".format(loss_dict['I_loss'].item())
+        )
+    
+    # =======================IDEC Clustering Optimization=====================
+    print("IDEC training ----------------------- Dataset: {} | Cluster number: {}".format(conf['dataset'], conf['cluster_num']))
+    
+    # Initialize cluster centers with pre-trained features
     out_list, latent_dist = model(full_data)
-    print("idec-----------------------train-dataset-: {} cluster_num-: {}".format(conf['dataset'], conf['cluster_num']))
-    # 用预训练特征初始化聚类中心
-    kmeans = KMeans(n_clusters=conf['cluster_num'], random_state=seed, init="k-means++").fit(
-        latent_dist['cluster_var'].detach().cpu().numpy())
+    kmeans = KMeans(
+        n_clusters=conf['cluster_num'], 
+        random_state=seed, 
+        init="k-means++"
+    ).fit(latent_dist['cluster_var'].detach().cpu().numpy())
+    
     model.cluster_layer.data = torch.tensor(kmeans.cluster_centers_, dtype=torch.float32).to(device)
     y_pred_last = kmeans.labels_
-    max_label_log = 0.0
-    max_label_pred = y_pred_last
-
+    max_log10p_idec = 0.0
+    max_label_idec = y_pred_last
+    
     pbar = tqdm(range(conf['idec_epochs']), ncols=120)
-    for epoch in pbar:# 每50轮更新软分配
+    for epoch in pbar:
+        # Update soft assignment every update_interval
         if epoch % conf['update_interval'] == 0:
             with torch.no_grad():
                 _, latent_dist = model(full_data)
-                # 计算软分配概率q
+                
+                # Calculate soft assignment (q) and target distribution (p)
                 tmp_q = latent_dist['q']
                 y_pred = tmp_q.cpu().numpy().argmax(1)
                 weight = tmp_q ** 2 / tmp_q.sum(0)
-                # 计算目标分布p
-                p = (weight.t() / weight.sum(1)).t()
+                p_dist = (weight.t() / weight.sum(1)).t()
+                
+                # Calculate label change rate
                 delta_label = np.sum(y_pred != y_pred_last).astype(np.float32) / y_pred.shape[0]
                 y_pred_last = y_pred
-                # 评估
-                df = survival
-                df["label"] = np.array(y_pred)
-                res = utils2.log_rank(df)
-                writer.writerow([res['p'], res['log2p'], res['log10p'], epoch, "IDEC"])
+                
+                # Survival analysis evaluation
+                survival["label"] = np.array(y_pred)
+                logrank_res = utils2.log_rank(survival)
+                writer.writerow([
+                    logrank_res['p'], 
+                    logrank_res['log2p'], 
+                    logrank_res['log10p'], 
+                    epoch, 
+                    "IDEC_training"
+                ])
                 result.flush()
-                if res['log10p'] > max_label_log:
-                    print(f"log10p: {res['log10p']}")
-                    max_label_log = res['log10p']
-                    # print(max_label_log)
-                    max_label_pred = y_pred
-                    torch.save(model.state_dict(), "{}/{}_max_label_log.pdparams".format(folder, conf['dataset']))
-
+                
+                # Save best IDEC model
+                if logrank_res['log10p'] > max_log10p_idec:
+                    print(f"Updated best log10p: {logrank_res['log10p']}")
+                    max_log10p_idec = logrank_res['log10p']
+                    max_label_idec = y_pred
+                    torch.save(
+                        model.state_dict(), 
+                        "{}/{}_idec_best_log10p.pdparams".format(folder, conf['dataset'])
+                    )
+                
+                # Early stopping if label change rate is below threshold
                 if epoch > 0 and delta_label < conf['stop']:
-                    print('delta_label {:.4f}'.format(delta_label), '< tol',
-                        conf['stop'])
+                    print(f'Label change rate {delta_label:.4f} < tolerance {conf["stop"]}')
                     print('Reached tolerance threshold. Stopping training.')
                     break
-                save_dir = DATASET_PATH+"result/"
-                utils2.visualize_latent_space(latent_dist, epoch, save_dir=DATASET_PATH+"result/{}_result/latent_space_images.png".format(conf['dataset']), title="Latent Space", method='tSNE',
-                                              labels=pred)
-                # utils2.lifeline_analysis(df, title_g=conf['dataset']+" Survival Analysis", save_path=DATASET_PATH+"result/survival_analysis.png")            
-                utils2.lifeline_analysis(df, title_g=conf['dataset']+" Survival Analysis", save_path=DATASET_PATH+"result/{}_result/survival_analysis.png".format(conf['dataset']))            
-
-        # 抽取数据 训练batch 小批量训练（加入KL散度）
+                
+                # Create visualization directory if not exists
+                vis_dir = os.path.dirname(DATASET_PATH + f"result/{conf['dataset']}_result/latent_space_images.png")
+                if not os.path.exists(vis_dir):
+                    os.makedirs(vis_dir)
+                
+                # Visualize latent space (tSNE)
+                utils2.visualize_latent_space(
+                    latent_dist, 
+                    epoch, 
+                    save_dir=DATASET_PATH + f"result/{conf['dataset']}_result/latent_space_epoch_{epoch}.png", 
+                    title="Latent Space (tSNE)", 
+                    method='tSNE',
+                    labels=y_pred  # Fix: Use current IDEC labels instead of pretrain labels
+                )
+                
+                # Survival curve analysis
+                utils2.lifeline_analysis(
+                    survival, 
+                    title_g=f"{conf['dataset']} Survival Analysis (Epoch {epoch})", 
+                    save_path=DATASET_PATH + f"result/{conf['dataset']}_result/survival_curve_epoch_{epoch}.png"
+                )
+        
+        # Batch training with KL divergence loss
         sample_num = exp_df.shape[0]
         randidx = torch.randperm(sample_num)
+        
         for i in range(round(sample_num / conf['batch_size'])):
             idx = randidx[conf['batch_size'] * i:(conf['batch_size'] * (i + 1))]
-            data_batch = [utils2.p_normalize(exp_df[idx]), utils2.p_normalize(methy_df[idx]), utils2.p_normalize(mirna_df[idx])]
+            data_batch = [
+                utils2.p_normalize(exp_df[idx]), 
+                utils2.p_normalize(methy_df[idx]), 
+                utils2.p_normalize(mirna_df[idx])
+            ]
+            
             out_list, latent_dist = model(data_batch)
-            kl_loss = F.kl_div(latent_dist['q'].log(), p[idx])
-            # l, loss_dict = loss(view_num=conf['view_num'], data_batch=data_batch, out_list=out_list,
-            #                     latent_dist=latent_dist,
-            #                     lmda_list=lmda_list, batch_size=conf['batch_size'])
-            l, loss_dict = loss(view_num=conf['view_num'], data_batch=data_batch, out_list=out_list,
-                    latent_dist=latent_dist, lmda_list=lmda_list, batch_size=conf['batch_size'], model=model)
-            l = conf['kl_loss_lmda'] * kl_loss
-            l.backward()
-            # 添加梯度监控（每个update interval执行）
-            # if (epoch % 100 == 0) and (i == 0):
-            #     print(f"\nIDEC Epoch {epoch} Gradients:")
-            #     for name, param in model.named_parameters():
-            #         if param.grad is not None:
-            #             print(f"{name}: {param.grad.abs().mean().item():.2e}")
+            
+            # KL divergence loss between soft assignment and target distribution
+            kl_div_loss = F.kl_div(latent_dist['q'].log(), p_dist[idx])
+            
+            # Calculate base loss
+            total_loss, loss_dict = loss(
+                view_num=conf['view_num'], 
+                data_batch=data_batch, 
+                out_list=out_list,
+                latent_dist=latent_dist, 
+                lmda_list=lmda_list, 
+                batch_size=conf['batch_size'], 
+                model=model
+            )
+            
+            # Combine losses (base loss + KL divergence loss)
+            total_loss = total_loss + conf['kl_loss_lmda'] * kl_div_loss
+            total_loss.backward()
             opt.step()
             opt.zero_grad()
-
-        # scheduler.step()
-        pbar.set_postfix(loss="{:3.4f}".format(loss_dict['loss'].item()),
-                         rec_loss="{:3.4f}".format(loss_dict['rec_loss'].item()),
-                         KLD="{:3.4f}".format(loss_dict['KLD'].item()),
-                         I_loss="{:3.4f}".format(loss_dict['I_loss'].item()),
-                         KL_loss="{:3.4f}".format(kl_loss.item()))
-    survival["label"] = np.array(max_label)
+        
+        # Update progress bar with loss metrics
+        pbar.set_postfix(
+            total_loss="{:3.4f}".format(loss_dict['loss'].item()),
+            reconstruction_loss="{:3.4f}".format(loss_dict['rec_loss'].item()),
+            KLD_loss="{:3.4f}".format(loss_dict['KLD'].item()),
+            InfoNCE_loss="{:3.4f}".format(loss_dict['I_loss'].item()),
+            KL_div_loss="{:3.4f}".format(kl_div_loss.item())
+        )
+    
+    # =======================Post-training Analysis=====================
+    # 1. Clinical enrichment analysis (Pretrain best labels)
+    survival["label"] = np.array(max_label_pretrain)
     clinical_data = utils2.get_clinical(DATASET_PATH + "data/clinical", survival, conf["dataset"])
-    cnt_NI = utils2.clinical_enrichement(clinical_data['label'],clinical_data)
-    survival["label"] = np.array(max_label_pred)
+    clinical_enrich_pretrain = utils2.clinical_enrichement(clinical_data['label'], clinical_data)
+    
+    # 2. Clinical enrichment analysis (IDEC best labels)
+    survival["label"] = np.array(max_label_idec)
     clinical_data = utils2.get_clinical(DATASET_PATH + "data/clinical", survival, conf["dataset"])
-    # clinical_data["pathologic_T"] = clinical_data["pathologic_T"].replace({
-    #     "T1a": "T1", "T1b": "T1",
-    #     "T2a": "T2", "T2b": "T2",
-    #     "T3a": "T3", "T3b": "T3",
-    #     "T4a": "T4", "T4b": "T4"
-    # })
-    # 去除 MX 和 NX 无效数据
-    # clinical_data = clinical_data[clinical_data["pathologic_M"] != "MX"]
-    # clinical_data = clinical_data[clinical_data["pathologic_N"] != "NX"]
-    clinical_data.to_csv("clinical_data.csv", index=False)
-    cnt = utils2.clinical_enrichement(clinical_data['label'],clinical_data)
-    writer.writerow([res['p'], res['log2p'], res['log10p'], epoch, "IDEC"])
-    print("{}:    DILCR-NI:  {}/{:.1f}   DILCR-ALL:   {}/{:.1f}".format(conf['dataset'],cnt_NI,max_log,cnt,max_label_log))
-    #DILCR-NI可能代表仅使用预训练阶段（无监督，无标签指导）的聚类结果，而DILCR-ALL是结合了IDEC阶段（有标签分布优化）的最终结果,NI可能指“No Improvement”或某种基线，而ALL表示完整流程。
-    #基于预训练阶段的纯无监督聚类结果;经过IDEC阶段聚类优化的最终结果
-    # 获取样本 ID，假设 exp 的索引是样本 ID
+    # Clean clinical data (remove invalid values)
+    clinical_data = clinical_data.dropna(subset=['pathologic_M', 'pathologic_N'])
+    clinical_data.to_csv(f"{folder}/{conf['dataset']}_clinical_data.csv", index=False)
+    clinical_enrich_idec = utils2.clinical_enrichement(clinical_data['label'], clinical_data)
+    
+    # 3. Save final clustering results
     exp = exp.T
     sample_ids = exp.index   
-    # 保存 IDEC 训练阶段的聚类标签
     idec_clustering_result = pd.DataFrame({
         'Sample_ID': sample_ids,
-        'IDEC_Cluster_Label': max_label_pred
+        'IDEC_Cluster_Label': max_label_idec
     })
     idec_clustering_result.to_csv(f"{folder}/{conf['dataset']}_idec_clustering_result.csv", index=False)
-
-    # 关闭之前打开的结果文件
+    
+    # 4. Print final results
+    print(f"{conf['dataset']}:    DILCR-Pretrain:  {clinical_enrich_pretrain}/{max_log10p:.1f}   DILCR-IDEC:   {clinical_enrich_idec}/{max_log10p_idec:.1f}")
+    
+    # Close result file
     result.close()
